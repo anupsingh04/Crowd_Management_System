@@ -4,6 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const mongoose = require("mongoose");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 const PORT = 5000;
@@ -29,6 +30,9 @@ const SectorLog = mongoose.model("SectorLog", sectorSchema);
 // --- 2. WebSocket & Express Setup ---
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
+
+// IMPORTANT: Put your actual API key here (get it from Google AI Studio)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 app.use(cors());
 app.use(express.json());
@@ -61,6 +65,52 @@ app.post("/api/updateCount", async (req, res) => {
     res.status(200).send("Data secured");
   } else {
     res.status(400).send("Bad Payload");
+  }
+});
+
+// Route 1: Fetches ONLY the historical data for the graphs (Loads instantly)
+app.get("/api/sector/:sectorName/history", async (req, res) => {
+  try {
+    const sector = req.params.sectorName;
+    const history = await SectorLog.find({ sector })
+      .sort({ timestamp: -1 })
+      .limit(20);
+
+    // Reverse so the oldest is first for the graph
+    res.json({ graphData: history.reverse() });
+  } catch (error) {
+    console.error("Error fetching history:", error);
+    res.status(500).json({ error: "Failed to fetch graph data" });
+  }
+});
+
+// Route 2: Fetches the Gemini Insight (Triggered by the button)
+app.post("/api/sector/:sectorName/insight", async (req, res) => {
+  try {
+    const sector = req.params.sectorName;
+
+    // Grab just the absolute latest data point to send to the AI
+    const latest = await SectorLog.findOne({ sector }).sort({ timestamp: -1 });
+
+    if (!latest) {
+      return res.status(404).json({ message: "No data found" });
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `You are an AI assistant for a crowd management system. 
+        Sector: ${sector}
+        Current Crowd Count: ${latest.count}/100
+        Temperature: ${latest.temp}°C
+        Raining: ${latest.raining}
+        
+        Provide a 1-sentence insight on the current situation, followed by 2 short, actionable measures the security team should take right now. Keep it brief and professional.`;
+
+    const result = await model.generateContent(prompt);
+
+    res.json({ insight: result.response.text() });
+  } catch (error) {
+    console.error("Error generating insight:", error);
+    res.status(500).json({ error: "Failed to generate AI insight" });
   }
 });
 
